@@ -48,8 +48,26 @@
     });
   }
 
+  // A service worker may wake on a background/guest Arena tab. Prefer the
+  // active tab so model data, reCAPTCHA, and cookies come from one session.
+  async function selectArenaTab() {
+    try {
+      var tabs = await chrome.tabs.query({
+        url: ['https://arena.ai/*', 'https://*.arena.ai/*'],
+      });
+      if (!tabs.length) return state.tabId;
+      var active = tabs.find(function(tab) { return tab.active; });
+      var newest = tabs.slice().sort(function(a, b) {
+        return (b.lastAccessed || 0) - (a.lastAccessed || 0);
+      })[0];
+      state.tabId = (active || newest).id;
+    } catch(e) {}
+    return state.tabId;
+  }
+
   // ========== Get cookies from the page ==========
   async function requestPageCookies() {
+    await selectArenaTab();
     if (!state.tabId) return null;
     try {
       return await new Promise(function(resolve) {
@@ -67,20 +85,87 @@
   }
 
   // ========== Refresh cookies ==========
+  async function getArenaCookies() {
+    await selectArenaTab();
+    var tabIds = state.tabId ? [state.tabId] : [];
+    try {
+      var arenaTabs = await chrome.tabs.query({
+        url: ['https://arena.ai/*', 'https://*.arena.ai/*'],
+      });
+      arenaTabs.forEach(function(tab) {
+        if (tab.id && tabIds.indexOf(tab.id) < 0) tabIds.push(tab.id);
+      });
+    } catch(e) {}
+
+    var stores = [];
+    try {
+      var allStores = await chrome.cookies.getAllCookieStores();
+      tabIds.forEach(function(tabId) {
+        var store = allStores.find(function(item) {
+          return item.tabIds && item.tabIds.indexOf(tabId) >= 0;
+        });
+        if (store && !stores.some(function(item) { return item.id === store.id; })) {
+          stores.push(store);
+        }
+      });
+    } catch(e) {}
+    if (!stores.length) stores.push({ id: undefined });
+
+    var groups = [];
+    for (var s = 0; s < stores.length; s++) {
+      var baseDetails = stores[s].id ? { storeId: stores[s].id } : {};
+      groups.push(await chrome.cookies.getAll(Object.assign({ domain: 'arena.ai' }, baseDetails)));
+      groups.push(await chrome.cookies.getAll(Object.assign({ url: 'https://arena.ai/' }, baseDetails)));
+      try {
+        var accessible = await chrome.cookies.getAll(baseDetails);
+        groups.push(accessible.filter(function(cookie) {
+          var domain = (cookie.domain || '').replace(/^\./, '').toLowerCase();
+          return domain === 'arena.ai' || domain.endsWith('.arena.ai');
+        }));
+      } catch(e) {}
+    }
+
+    // Chrome 119+ keeps partitioned cookies out of ordinary queries.
+    if (typeof chrome.cookies.getPartitionKey === 'function') {
+      for (var t = 0; t < tabIds.length; t++) {
+        try {
+          var partition = await chrome.cookies.getPartitionKey({ tabId: tabIds[t], frameId: 0 });
+          if (partition && partition.partitionKey) {
+            groups.push(await chrome.cookies.getAll({
+              url: 'https://arena.ai/',
+              partitionKey: partition.partitionKey,
+            }));
+          }
+        } catch(e) {}
+      }
+    }
+
+    var unique = {};
+    groups.forEach(function(group) {
+      group.forEach(function(cookie) {
+        var partitionKey = cookie.partitionKey
+          ? JSON.stringify(cookie.partitionKey)
+          : '';
+        var key = [cookie.name, cookie.domain, cookie.path, cookie.storeId, partitionKey].join('|');
+        if (!unique[key]) unique[key] = cookie;
+      });
+    });
+    return Object.keys(unique).map(function(key) { return unique[key]; });
+  }
+
   async function refreshCookies() {
     try {
-      var byDomain = await chrome.cookies.getAll({ domain: 'arena.ai' });
-      var byDotDomain = await chrome.cookies.getAll({ domain: '.arena.ai' });
-      var byUrl = await chrome.cookies.getAll({ url: 'https://arena.ai' });
+      var browserCookies = await getArenaCookies();
 
-      console.log(TAG, 'chrome.cookies.getAll results:');
-      console.log(TAG, '  domain=arena.ai:', byDomain.length, 'cookies:', byDomain.map(function(c) { return c.name; }).join(', '));
-      console.log(TAG, '  domain=.arena.ai:', byDotDomain.length, 'cookies:', byDotDomain.map(function(c) { return c.name; }).join(', '));
-      console.log(TAG, '  url=https://arena.ai:', byUrl.length, 'cookies:', byUrl.map(function(c) { return c.name; }).join(', '));
+      console.log(TAG, 'Arena cookies:', browserCookies.length, 'cookies:', browserCookies.map(function(c) { return c.name; }).join(', '));
 
-      state.cookies = {};
-      byDomain.concat(byDotDomain).concat(byUrl).forEach(function(c) {
-        state.cookies[c.name] = c.value;
+      // Some Chrome refreshes expose only a partial cookie snapshot. Merge it
+      // into the last complete snapshot so a valid Arena session is not lost
+      // between periodic pushes.
+      var freshCookies = {};
+      browserCookies.forEach(function(c) {
+        // getAll() sorts longer, more specific paths first.
+        if (!freshCookies[c.name]) freshCookies[c.name] = c.value;
       });
 
       // Try document.cookie from the page (it can read non-HttpOnly cookies).
@@ -89,11 +174,12 @@
         console.log(TAG, 'Page cookies:', Object.keys(pageCookies).join(', '));
         // Merge page cookies.
         for (var k in pageCookies) {
-          if (!state.cookies[k]) {
-            state.cookies[k] = pageCookies[k];
+          if (!freshCookies[k]) {
+            freshCookies[k] = pageCookies[k];
           }
         }
       }
+      state.cookies = Object.assign({}, state.cookies, freshCookies);
 
       console.log(TAG, 'All cookies:', Object.keys(state.cookies).join(', '));
 
@@ -109,6 +195,15 @@
           auth = p0 + (p1 || '');
           console.log(TAG, 'Combined auth token length:', auth.length);
         }
+      }
+      if (!auth) {
+        // Current Arena deployments may use a provisional or differently
+        // named session cookie. This value is only a presence marker; the
+        // proxy authenticates with the complete Cookie header.
+        var sessionName = Object.keys(state.cookies).find(function(name) {
+          return name === 'provisional_user_id' || /(?:auth|session)[-_\.]/i.test(name);
+        });
+        if (sessionName) auth = state.cookies[sessionName];
       }
       state.authToken = auth;
 
@@ -156,6 +251,7 @@
 
   // ========== Request a token from the content script ==========
   async function requestToken() {
+    await selectArenaTab();
     if (!state.tabId) {
       try {
         var tabs = await chrome.tabs.query({ url: 'https://arena.ai/*' });

@@ -70,6 +70,7 @@ class Store:
         self.auth_token: str = ""
         self.cf_clearance: str = ""
         self.v3_tokens: list = []  # [{token, action, ts}]
+        self.used_v3_tokens: dict[str, float] = {}  # token -> consumed timestamp
         self.v2_token: Optional[dict] = None
         self.last_push: float = 0
         self.models: list = []
@@ -84,10 +85,16 @@ class Store:
 
     def push(self, data: dict):
         self.last_push = time.time()
+        now = time.time()
+        self.used_v3_tokens = {
+            token: consumed_at
+            for token, consumed_at in self.used_v3_tokens.items()
+            if now - consumed_at < 130
+        }
         if data.get("cookies"):
             self.cookies = data["cookies"]
-        if data.get("auth_token"):
-            self.auth_token = data["auth_token"]
+        if "auth_token" in data:
+            self.auth_token = data.get("auth_token") or ""
         if data.get("cf_clearance"):
             self.cf_clearance = data["cf_clearance"]
         # V3 tokens
@@ -95,6 +102,8 @@ class Store:
             for t in data["v3_tokens"]:
                 tok = t.get("token", "")
                 if not tok or len(tok) < 20:
+                    continue
+                if tok in self.used_v3_tokens:
                     continue
                 age = t.get("age_ms", 0)
                 if age > 120000:
@@ -150,7 +159,9 @@ class Store:
         self.v3_tokens = [t for t in self.v3_tokens if now - t["ts"] < 120]
         if not self.v3_tokens:
             return None
-        return self.v3_tokens.pop(0)["token"]
+        token = self.v3_tokens.pop(0)["token"]
+        self.used_v3_tokens[token] = now
+        return token
 
     def pop_v2_token(self) -> Optional[str]:
         if not self.v2_token:
@@ -360,15 +371,6 @@ async def chat_completions(request: Request):
     user_msg_id = uuid7()
     model_a_msg_id = uuid7()
 
-    # Extract userId from cookies.
-    user_id = store.cookies.get("arena-user-id", "")
-    if not user_id:
-        # Try extracting it from another cookie.
-        for key, value in store.cookies.items():
-            if "user" in key.lower() and len(value) > 20:
-                user_id = value
-                break
-
     arena_payload = {
         "id": eval_id,
         # Arena's /text/direct route uses the internal direct-battle mode when
@@ -385,10 +387,6 @@ async def chat_completions(request: Request):
         },
         "modality": modality,
     }
-
-    # Add userId when available.
-    if user_id:
-        arena_payload["userId"] = user_id
 
     if v2_token:
         arena_payload["recaptchaV2Token"] = v2_token
@@ -408,9 +406,10 @@ async def chat_completions(request: Request):
         "cookie": store.build_cookie_header(),
     }
 
-    # Add the authorization header when auth_token is available.
-    if store.auth_token:
-        headers["authorization"] = f"Bearer {store.auth_token}"
+    # Authentication is carried by Arena's cookies, matching requests from
+    # the web app. The arena-auth cookie is not always a bearer token; sending
+    # it as Authorization can make Arena reject a valid session as an unknown
+    # user.
 
     url = ARENA_CREATE_EVAL
     log.info(f"Sending to arena.ai: model={model_name}, eval_id={eval_id}, has_v3={bool(v3_token)}, has_v2={bool(v2_token)}")
