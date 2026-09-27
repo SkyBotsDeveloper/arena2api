@@ -31,6 +31,23 @@
     tabId: null,
   };
 
+  // Inject the page script only after the isolated content script is ready.
+  // This avoids a race where the page script posts its response before the
+  // content script has registered its message listener.
+  function injectMainWorld(tabId) {
+    if (!tabId) return Promise.resolve();
+    return chrome.scripting.executeScript({
+      target: { tabId: tabId, allFrames: false },
+      files: ['injector.js'],
+      world: 'MAIN',
+      injectImmediately: true,
+    }).then(function() {
+      console.log(TAG, 'Main-world injector loaded:', tabId);
+    }).catch(function(error) {
+      console.error(TAG, 'Could not load main-world injector:', error);
+    });
+  }
+
   // ========== Get cookies from the page ==========
   async function requestPageCookies() {
     if (!state.tabId) return null;
@@ -200,7 +217,11 @@
       case 'TAB_READY':
         state.tabId = sender.tab ? sender.tab.id : null;
         console.log(TAG, 'Tab ready:', state.tabId);
-        refreshCookies().then(function() { pushToServer(); });
+        injectMainWorld(state.tabId).then(function() {
+          return refreshCookies();
+        }).then(function() {
+          pushToServer();
+        });
         sendResponse({ ok: true });
         break;
 
