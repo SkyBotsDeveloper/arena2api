@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Arena2API</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { width:340px; font-family:system-ui,sans-serif; background:#111827; color:#e5e7eb; padding:16px; }
+h1 { font-size:15px; color:#fff; margin-bottom:12px; display:flex; align-items:center; gap:6px; }
+.card { background:#1f2937; border-radius:8px; padding:10px 12px; margin-bottom:10px; }
+.row { display:flex; justify-content:space-between; align-items:center; padding:3px 0; font-size:12px; }
+.label { color:#9ca3af; }
+.val { font-weight:600; }
+.ok { color:#34d399; }
+.warn { color:#fbbf24; }
+.err { color:#f87171; }
+.dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:5px; }
+.dot-g { background:#34d399; } .dot-y { background:#fbbf24; } .dot-r { background:#f87171; }
+.title { font-size:11px; color:#6b7280; text-transform:uppercase; letter-spacing:1px; margin-bottom:6px; }
+.inp { display:flex; gap:6px; margin-bottom:10px; }
+input { flex:1; background:#374151; border:1px solid #4b5563; border-radius:6px; padding:7px 10px; color:#e5e7eb; font-size:12px; outline:none; }
+input:focus { border-color:#34d399; }
+button { background:#374151; color:#34d399; border:1px solid #34d39933; border-radius:6px; padding:7px 12px; font-size:12px; cursor:pointer; white-space:nowrap; }
+button:hover { background:#34d39922; }
+button.pri { background:#34d399; color:#111827; font-weight:600; }
+button.pri:hover { background:#2dd4a0; }
+.btns { display:flex; gap:6px; margin-top:10px; }
+.btns button { flex:1; }
+.foot { margin-top:10px; text-align:center; font-size:10px; color:#4b5563; }
+.foot a { color:#34d399; text-decoration:none; }
+</style>
+</head>
+<body>
+<h1>⚡ Arena2API</h1>
+
+<div class="card">
+  <div class="title">Connection</div>
+  <div class="row"><span class="label">Server</span><span class="val" id="srv">-</span></div>
+  <div class="row"><span class="label">Arena Tab</span><span class="val" id="tab">-</span></div>
+  <div class="row"><span class="label">Error</span><span class="val" id="err">-</span></div>
+</div>
+
+<div class="card">
+  <div class="title">Status</div>
+  <div class="row"><span class="label">V3 Tokens</span><span class="val" id="v3">0</span></div>
+  <div class="row"><span class="label">Auth Cookie</span><span class="val" id="auth">-</span></div>
+  <div class="row"><span class="label">Models</span><span class="val" id="mdl">0</span></div>
+</div>
+
+<div class="title">Server URL</div>
+<div class="inp">
+  <input type="text" id="url" placeholder="http://127.0.0.1:9090">
+  <button id="save">Save</button>
+</div>
+
+<div class="btns">
+  <button id="open" class="pri">Open Arena.ai</button>
+  <button id="token">Get Token</button>
+  <button id="push">Push</button>
+</div>
+
+<div class="foot">v1.0.0</div>
+
+<script src="popup.js"></script>
+</body>
+</html>
