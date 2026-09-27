@@ -226,6 +226,12 @@
     console.log(TAG, 'Token added, pool:', state.v3Tokens.length);
   }
 
+  function addV2Token(token) {
+    if (!token || token.length < 20) return;
+    state.v2Token = { token: token, ts: Date.now() };
+    console.log(TAG, 'V2 token added');
+  }
+
   function isModelList(models) {
     return Array.isArray(models) && models.length > 0 && models.some(function(model) {
       return model && typeof model === 'object' &&
@@ -276,6 +282,18 @@
     } catch(e) {
       state.tabId = null;
     }
+  }
+
+  async function requestV2Token() {
+    await selectArenaTab();
+    if (!state.tabId) return;
+    try {
+      chrome.tabs.sendMessage(state.tabId, { type: 'NEED_V2_TOKEN' }, function(resp) {
+        if (chrome.runtime.lastError || !resp || !resp.token) return;
+        addV2Token(resp.token);
+        pushToServer();
+      });
+    } catch(e) {}
   }
 
   // ========== Push to the server ==========
@@ -406,6 +424,7 @@
         break;
 
       case 'FORCE_TOKEN':
+        requestV2Token();
         requestToken();
         sendResponse({ ok: true });
         break;

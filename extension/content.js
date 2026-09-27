@@ -88,6 +88,15 @@
       return true;
     }
 
+  if (msg.type === 'NEED_V2_TOKEN') {
+    callInjector('GET_V2_TOKEN').then(function(result) {
+      sendResponse({ token: result.token });
+    }).catch(function(err) {
+      sendResponse({ error: err.message });
+    });
+    return true;
+  }
+
     if (msg.type === 'NEED_MODELS') {
       callInjector('GET_MODELS').then(function(result) {
         sendResponse({ models: result.models });

@@ -152,6 +152,25 @@
     });
   }
 
+  // A V2 response is created only after the user completes Arena's visible
+  // challenge. This function never renders or solves a CAPTCHA; it only reads
+  // the response already present in the page.
+  function getRecaptchaV2Token() {
+    try {
+      var textarea = document.querySelector('textarea[name^="g-recaptcha-response"]');
+      if (textarea && textarea.value) return textarea.value;
+    } catch(e) {}
+    try {
+      var g = window.grecaptcha && window.grecaptcha.enterprise
+        ? window.grecaptcha.enterprise
+        : window.grecaptcha;
+      if (g && typeof g.getResponse === 'function') {
+        return g.getResponse() || '';
+      }
+    } catch(e) {}
+    return '';
+  }
+
   // ========== Extract cookies ==========
   function extractCookies() {
     var cookies = {};
@@ -197,6 +216,15 @@
             error: err.message || String(err),
           }, '*');
         });
+        break;
+
+      case 'GET_V2_TOKEN':
+        window.postMessage({
+          from: 'arena2api-injector',
+          type: 'V2_TOKEN_OK',
+          rid: rid,
+          token: getRecaptchaV2Token(),
+        }, '*');
         break;
 
       case 'GET_MODELS':
