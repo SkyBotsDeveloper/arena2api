@@ -58,7 +58,7 @@
   };
 
   $('open').onclick = function() {
-    chrome.tabs.create({ url: 'https://arena.ai/?mode=direct' });
+    chrome.tabs.create({ url: 'https://arena.ai/text/direct?model_a=max' });
     window.close();
   };
 

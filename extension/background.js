@@ -131,6 +131,23 @@
     console.log(TAG, 'Token added, pool:', state.v3Tokens.length);
   }
 
+  function isModelList(models) {
+    return Array.isArray(models) && models.length > 0 && models.some(function(model) {
+      return model && typeof model === 'object' &&
+        typeof model.id === 'string' && typeof model.publicName === 'string';
+    });
+  }
+
+  function requestModels() {
+    if (!state.tabId) return;
+    chrome.tabs.sendMessage(state.tabId, { type: 'NEED_MODELS' }, function(resp) {
+      if (chrome.runtime.lastError || !resp || !isModelList(resp.models)) return;
+      state.models = resp.models;
+      console.log(TAG, 'Models refreshed:', state.models.length);
+      pushToServer();
+    });
+  }
+
   // Remove expired tokens.
   function cleanTokens() {
     var now = Date.now();
@@ -221,12 +238,13 @@
           return refreshCookies();
         }).then(function() {
           pushToServer();
+          setTimeout(requestModels, 1500);
         });
         sendResponse({ ok: true });
         break;
 
       case 'PAGE_INIT':
-        if (msg.models && msg.models.length > 0) {
+        if (isModelList(msg.models)) {
           state.models = msg.models;
           console.log(TAG, 'Models received:', msg.models.length);
         }
@@ -307,6 +325,9 @@
     cleanTokens();
     if (state.v3Tokens.length < 5) {
       requestToken();
+    }
+    if (!isModelList(state.models)) {
+      requestModels();
     }
   }, 80000);
 

@@ -124,16 +124,20 @@ class Store:
             self.next_actions.update(data["next_actions"])
 
     def _update_models(self, models: list):
-        self.models = models
+        self.models = [m for m in models if isinstance(m, dict)]
         self.text_models = {}
         self.image_models = {}
         self.vision_models = []
-        for m in models:
+        for m in self.models:
             name = m.get("publicName", "")
             mid = m.get("id", "")
-            caps = m.get("capabilities", {})
-            out_caps = caps.get("outputCapabilities", [])
-            in_caps = caps.get("inputCapabilities", [])
+            if not isinstance(name, str) or not name or not isinstance(mid, str) or not mid:
+                continue
+            caps = m.get("capabilities") or {}
+            if not isinstance(caps, dict):
+                continue
+            out_caps = caps.get("outputCapabilities") or []
+            in_caps = caps.get("inputCapabilities") or []
             if "text" in out_caps:
                 self.text_models[name] = mid
             if "image" in out_caps:
@@ -396,7 +400,7 @@ async def chat_completions(request: Request):
         "accept": "*/*",
         "content-type": "application/json",
         "origin": ARENA_BASE,
-        "referer": f"{ARENA_BASE}/?mode=direct",
+        "referer": f"{ARENA_BASE}/text/direct?model_a=max",
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "cookie": store.build_cookie_header(),
     }

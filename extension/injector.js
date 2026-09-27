@@ -14,6 +14,13 @@
   var DEFAULT_SITEKEY = '6LeTGMcsAAAAALuIlkVwIxaAuZA8VledA6d3Nnb0';
   var TAG = '[Arena2API]';
 
+  function isModelList(value) {
+    return Array.isArray(value) && value.length > 0 && value.some(function(model) {
+      return model && typeof model === 'object' &&
+        typeof model.id === 'string' && typeof model.publicName === 'string';
+    });
+  }
+
   function extractJsonArrayAfterKey(text, key) {
     var keyIndex = text.indexOf('"' + key + '"');
     if (keyIndex < 0) return null;
@@ -49,7 +56,8 @@
 
   function extractModelsFromFlightData(text) {
     if (!text || text.indexOf('initialModels') < 0) return null;
-    return extractJsonArrayAfterKey(text, 'initialModels');
+    var models = extractJsonArrayAfterKey(text, 'initialModels');
+    return isModelList(models) ? models : null;
   }
 
   // ========== Extract the model list ==========
@@ -58,7 +66,7 @@
       // Method 1: extract from __NEXT_DATA__.
       if (window.__NEXT_DATA__) {
         var props = window.__NEXT_DATA__.props;
-        if (props && props.pageProps && props.pageProps.initialModels) {
+        if (props && props.pageProps && isModelList(props.pageProps.initialModels)) {
           return props.pageProps.initialModels;
         }
       }
