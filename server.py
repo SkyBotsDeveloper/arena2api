@@ -371,7 +371,10 @@ async def chat_completions(request: Request):
 
     arena_payload = {
         "id": eval_id,
-        "mode": "direct",
+        # Arena's /text/direct route uses the internal direct-battle mode when
+        # it creates a new conversation. Sending "direct" is rejected by the
+        # current backend with: "direct mode is not allowed...".
+        "mode": "direct-battle",
         "modelAId": model_id,
         "userMessageId": user_msg_id,
         "modelAMessageId": model_a_msg_id,
