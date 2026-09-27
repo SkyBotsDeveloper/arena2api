@@ -11,8 +11,46 @@
 (function() {
   'use strict';
 
-  var SITEKEY = '6Led_uYrAAAAAKjxDIF58fgFtX3t8loNAK85bW9I';
+  var DEFAULT_SITEKEY = '6LeTGMcsAAAAALuIlkVwIxaAuZA8VledA6d3Nnb0';
   var TAG = '[Arena2API]';
+
+  function extractJsonArrayAfterKey(text, key) {
+    var keyIndex = text.indexOf('"' + key + '"');
+    if (keyIndex < 0) return null;
+    var start = text.indexOf('[', keyIndex);
+    if (start < 0) return null;
+
+    var depth = 0;
+    var inString = false;
+    var escaped = false;
+    for (var i = start; i < text.length; i++) {
+      var ch = text[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') inString = true;
+      else if (ch === '[') depth++;
+      else if (ch === ']') {
+        depth--;
+        if (depth === 0) {
+          try {
+            return JSON.parse(text.substring(start, i + 1));
+          } catch(e) {
+            return null;
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  function extractModelsFromFlightData(text) {
+    if (!text || text.indexOf('initialModels') < 0) return null;
+    return extractJsonArrayAfterKey(text, 'initialModels');
+  }
 
   // ========== Extract the model list ==========
   function extractModels() {
@@ -31,30 +69,8 @@
           var entry = window.__next_f[i];
           if (!entry || !entry[1]) continue;
           var str = typeof entry[1] === 'string' ? entry[1] : '';
-          if (str.indexOf('initialModels') >= 0) {
-            // Find the JSON section.
-            var jsonStart = str.indexOf('{"initialModels"');
-            if (jsonStart < 0) jsonStart = str.indexOf('"initialModels"');
-            if (jsonStart >= 0) {
-              // Find the start of the object that contains it.
-              var braceStart = str.lastIndexOf('{', jsonStart);
-              if (braceStart >= 0) {
-                // Try parsing it.
-                var depth = 0;
-                for (var j = braceStart; j < str.length; j++) {
-                  if (str[j] === '{') depth++;
-                  else if (str[j] === '}') depth--;
-                  if (depth === 0) {
-                    try {
-                      var obj = JSON.parse(str.substring(braceStart, j + 1));
-                      if (obj.initialModels) return obj.initialModels;
-                    } catch(e) {}
-                    break;
-                  }
-                }
-              }
-            }
-          }
+          var flightModels = extractModelsFromFlightData(str);
+          if (flightModels) return flightModels;
         }
       }
 
@@ -63,10 +79,13 @@
       for (var k = 0; k < scripts.length; k++) {
         var text = scripts[k].textContent || '';
         if (text.indexOf('initialModels') >= 0 && text.indexOf('self.__next_f.push') >= 0) {
-          var match = text.match(/initialModels":\s*(\[[\s\S]*?\])\s*,\s*"/);
+          var match = text.match(/self\.__next_f\.push\(([\s\S]+)\)\s*;?\s*$/);
           if (match) {
             try {
-              return JSON.parse(match[1]);
+              var payload = JSON.parse(match[1]);
+              var payloadText = payload && typeof payload[1] === 'string' ? payload[1] : '';
+              var scriptModels = extractModelsFromFlightData(payloadText);
+              if (scriptModels) return scriptModels;
             } catch(e) {}
           }
         }
@@ -85,6 +104,20 @@
   }
 
   // ========== Get a reCAPTCHA token ==========
+  function getRecaptchaSiteKey() {
+    var elements = document.querySelectorAll(
+      'script[src*="recaptcha/enterprise.js?render="], link[href*="recaptcha/enterprise.js?render="]'
+    );
+    for (var i = 0; i < elements.length; i++) {
+      var source = elements[i].src || elements[i].href || '';
+      try {
+        var key = new URL(source, window.location.href).searchParams.get('render');
+        if (key && key !== 'explicit') return key;
+      } catch(e) {}
+    }
+    return DEFAULT_SITEKEY;
+  }
+
   function getRecaptchaToken(action) {
     return new Promise(function(resolve, reject) {
       var g = window.grecaptcha && window.grecaptcha.enterprise
@@ -96,11 +129,18 @@
         return;
       }
 
-      g.ready(function() {
-        g.execute(SITEKEY, { action: action || 'chat_submit' })
-          .then(resolve)
-          .catch(reject);
-      });
+      try {
+        g.ready(function() {
+          try {
+            Promise.resolve(g.execute(getRecaptchaSiteKey(), { action: action || 'chat_submit' }))
+              .then(resolve, reject);
+          } catch(error) {
+            reject(error);
+          }
+        });
+      } catch(error) {
+        reject(error);
+      }
     });
   }
 
