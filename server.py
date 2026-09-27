@@ -26,7 +26,7 @@ import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.responses import StreamingResponse, JSONResponse
+from starlette.responses import Response, StreamingResponse, JSONResponse
 
 # ============================================================
 # Logging
@@ -78,10 +78,17 @@ class Store:
         self.image_models: dict = {}
         self.vision_models: list = []
         self.next_actions: dict = {}  # action name -> hash
+        self.bridge_jobs: list[dict] = []
+        self.bridge_waiters: dict[str, asyncio.Future] = {}
+        self.last_bridge_poll: float = 0
 
     @property
     def active(self) -> bool:
         return self.last_push > 0 and (time.time() - self.last_push < 120)
+
+    @property
+    def browser_bridge_active(self) -> bool:
+        return time.time() - self.last_bridge_poll < 15
 
     def push(self, data: dict):
         self.last_push = time.time()
@@ -192,6 +199,7 @@ class Store:
             "text_models": len(self.text_models),
             "image_models": len(self.image_models),
             "next_actions": list(self.next_actions.keys()),
+            "browser_bridge_active": self.browser_bridge_active,
             "cookies": list(self.cookies.keys()),
         }
 
@@ -246,6 +254,115 @@ async def extension_push(request: Request):
 @app.get("/v1/extension/status")
 async def extension_status():
     return store.status()
+
+
+@app.get("/v1/extension/job")
+async def extension_job():
+    """Long-lived extension polls this for work that must run in the page."""
+    store.last_bridge_poll = time.time()
+    if not store.bridge_jobs:
+        return Response(status_code=204)
+    return {"job": store.bridge_jobs.pop(0)}
+
+
+@app.post("/v1/extension/job/{job_id}/result")
+async def extension_job_result(job_id: str, request: Request):
+    store.last_bridge_poll = time.time()
+    try:
+        result = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON")
+    waiter = store.bridge_waiters.get(job_id)
+    if waiter and not waiter.done():
+        waiter.set_result(result)
+    return {"status": "ok"}
+
+
+async def run_in_arena_page(payload: dict) -> dict:
+    """Send an Arena call to the extension's page-context fetch bridge."""
+    job_id = uuid7()
+    waiter = asyncio.get_running_loop().create_future()
+    store.bridge_waiters[job_id] = waiter
+    store.bridge_jobs.append({"id": job_id, "payload": payload})
+    try:
+        return await asyncio.wait_for(waiter, timeout=330)
+    except asyncio.TimeoutError:
+        raise HTTPException(504, "Arena browser bridge timed out")
+    finally:
+        store.bridge_waiters.pop(job_id, None)
+
+
+def parse_arena_body(raw: str) -> tuple[str, str, str]:
+    """Extract text/reasoning/finish reason from Arena's event stream."""
+    content_parts, reasoning_parts = [], []
+    finish_reason = "stop"
+    for line in raw.splitlines():
+        if line.startswith("a0:"):
+            try:
+                value = json.loads(line[3:])
+                if isinstance(value, str) and value != "hasArenaError":
+                    content_parts.append(value)
+            except json.JSONDecodeError:
+                pass
+        elif line.startswith("ag:"):
+            try:
+                value = json.loads(line[3:])
+                if isinstance(value, str):
+                    reasoning_parts.append(value)
+            except json.JSONDecodeError:
+                pass
+        elif line.startswith("a2:") and "heartbeat" not in line:
+            try:
+                for image in json.loads(line[3:]):
+                    if image.get("image"):
+                        content_parts.append(f"![image]({image['image']})")
+            except (json.JSONDecodeError, TypeError):
+                pass
+        elif line.startswith("ad:"):
+            try:
+                finish_reason = json.loads(line[3:]).get("finishReason") or finish_reason
+            except json.JSONDecodeError:
+                pass
+        elif line.startswith("a3:"):
+            content_parts.append(f"[Error: {line[3:]}]")
+    return "".join(content_parts), "".join(reasoning_parts), finish_reason
+
+
+def browser_completion(result: dict, model_name: str, eval_id: str) -> dict:
+    status = result.get("status", 0)
+    raw = result.get("body", "")
+    if status != 200:
+        raise HTTPException(status or 502, f"Arena browser request failed: {raw[:200]}")
+    content, reasoning, finish_reason = parse_arena_body(raw)
+    message = {"role": "assistant", "content": content}
+    if reasoning:
+        message["reasoning_content"] = reasoning
+    return {
+        "id": f"chatcmpl-{eval_id}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model_name,
+        "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
+        "usage": {},
+    }
+
+
+async def browser_stream_response(result: dict, model_name: str, eval_id: str):
+    completion = browser_completion(result, model_name, eval_id)
+    message = completion["choices"][0]["message"]
+    if message["content"]:
+        chunk = {
+            "id": completion["id"], "object": "chat.completion.chunk",
+            "created": completion["created"], "model": model_name,
+            "choices": [{"index": 0, "delta": {"content": message["content"]}, "finish_reason": None}],
+        }
+        yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+    chunk = {
+        "id": completion["id"], "object": "chat.completion.chunk",
+        "created": completion["created"], "model": model_name,
+        "choices": [{"index": 0, "delta": {}, "finish_reason": completion["choices"][0]["finish_reason"]}],
+    }
+    yield f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n"
 
 
 # ============================================================
@@ -359,10 +476,6 @@ async def chat_completions(request: Request):
             history_parts.append(f"<|{role}|>\n{content}")
         prompt = "\n".join(history_parts)
 
-    # Get a reCAPTCHA token.
-    v3_token = store.pop_v3_token()
-    v2_token = store.pop_v2_token() if not v3_token else None
-
     is_image = model_name in store.image_models
     modality = "image" if is_image else "chat"
 
@@ -388,6 +501,23 @@ async def chat_completions(request: Request):
         "modality": modality,
     }
 
+    # When available, run the request in the Arena page itself. This preserves
+    # the browser's real cookie, TLS, and reCAPTCHA context instead of copying
+    # a browser token into a Python HTTP request.
+    if store.browser_bridge_active:
+        log.info(f"Sending through browser bridge: model={model_name}, eval_id={eval_id}")
+        result = await run_in_arena_page(arena_payload)
+        if stream:
+            return StreamingResponse(
+                browser_stream_response(result, model_name, eval_id),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+            )
+        return browser_completion(result, model_name, eval_id)
+
+    # Legacy fallback when an older extension is installed.
+    v3_token = store.pop_v3_token()
+    v2_token = store.pop_v2_token() if not v3_token else None
     if v2_token:
         arena_payload["recaptchaV2Token"] = v2_token
         arena_payload["recaptchaV3Token"] = None

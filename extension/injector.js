@@ -227,6 +227,40 @@
         }, '*');
         break;
 
+      case 'PAGE_REQUEST':
+        var payload = Object.assign({}, msg.payload || {});
+        var v2Token = getRecaptchaV2Token();
+        var tokenPromise = v2Token
+          ? Promise.resolve({ v2: v2Token })
+          : getRecaptchaToken('chat_submit').then(function(token) { return { v3: token }; });
+        tokenPromise.then(function(tokens) {
+          if (tokens.v2) {
+            payload.recaptchaV2Token = tokens.v2;
+            payload.recaptchaV3Token = undefined;
+          } else {
+            payload.recaptchaV3Token = tokens.v3;
+          }
+          return fetch('/nextjs-api/stream/create-evaluation', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify(payload),
+          });
+        }).then(function(response) {
+          return response.text().then(function(body) {
+            window.postMessage({
+              from: 'arena2api-injector', type: 'PAGE_REQUEST_OK', rid: rid,
+              status: response.status, body: body,
+            }, '*');
+          });
+        }).catch(function(err) {
+          window.postMessage({
+            from: 'arena2api-injector', type: 'PAGE_REQUEST_ERR', rid: rid,
+            error: err.message || String(err),
+          }, '*');
+        });
+        break;
+
       case 'GET_MODELS':
         var models = extractModels();
         window.postMessage({

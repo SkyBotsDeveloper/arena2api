@@ -342,6 +342,52 @@
     }
   }
 
+  // ========== Native browser request bridge ==========
+  var jobPollActive = false;
+
+  async function submitJobResult(jobId, result) {
+    var url = state.proxyUrl.replace(/\/+$/, '') + '/v1/extension/job/' + encodeURIComponent(jobId) + '/result';
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(result),
+    });
+  }
+
+  async function runPageJob(job) {
+    await selectArenaTab();
+    if (!state.tabId) {
+      await submitJobResult(job.id, { status: 0, body: 'No active Arena tab' });
+      return;
+    }
+    var result = await new Promise(function(resolve) {
+      chrome.tabs.sendMessage(state.tabId, { type: 'RUN_ARENA_REQUEST', payload: job.payload }, function(response) {
+        if (chrome.runtime.lastError) {
+          resolve({ status: 0, body: chrome.runtime.lastError.message });
+        } else {
+          resolve(response || { status: 0, body: 'No response from Arena page' });
+        }
+      });
+    });
+    await submitJobResult(job.id, result);
+  }
+
+  async function pollBrowserJobs() {
+    if (jobPollActive || !state.proxyUrl) return;
+    jobPollActive = true;
+    try {
+      var url = state.proxyUrl.replace(/\/+$/, '') + '/v1/extension/job';
+      var response = await fetch(url, { cache: 'no-store' });
+      if (response.status === 204 || !response.ok) return;
+      var data = await response.json();
+      if (data.job) await runPageJob(data.job);
+    } catch(e) {
+      // Push status already reports local-server connection errors.
+    } finally {
+      jobPollActive = false;
+    }
+  }
+
   // ========== Message handling ==========
   chrome.runtime.onMessage.addListener(function(msg, sender, sendResponse) {
     switch (msg.type) {
@@ -451,12 +497,17 @@
     pushToServer();
   }, 30000);
 
+  // Polling keeps the local server passive; all Arena calls still originate
+  // from the user's real Arena page context.
+  setInterval(pollBrowserJobs, 1000);
+
   // ========== Initialization ==========
   chrome.storage.local.get(['proxyUrl'], function(result) {
     if (result.proxyUrl) state.proxyUrl = result.proxyUrl;
     console.log(TAG, 'Proxy URL:', state.proxyUrl);
     // Push immediately after startup.
     refreshCookies().then(function() { pushToServer(); });
+    pollBrowserJobs();
   });
 
   // Listen for tab closures.

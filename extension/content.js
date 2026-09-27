@@ -14,10 +14,11 @@
   function callInjector(type, data) {
     var id = 'r' + (++rid) + '_' + Date.now();
     return new Promise(function(resolve, reject) {
-      var timer = setTimeout(function() {
+    var timeout = type === 'PAGE_REQUEST' ? 330000 : 20000;
+    var timer = setTimeout(function() {
         delete pending[id];
         reject(new Error('Injector timeout'));
-      }, 20000);
+    }, timeout);
       pending[id] = { resolve: resolve, reject: reject, timer: timer };
       var msg = { from: 'arena2api-content', type: type, rid: id };
       if (data) {
@@ -93,6 +94,15 @@
       sendResponse({ token: result.token });
     }).catch(function(err) {
       sendResponse({ error: err.message });
+    });
+    return true;
+  }
+
+  if (msg.type === 'RUN_ARENA_REQUEST') {
+    callInjector('PAGE_REQUEST', { payload: msg.payload }).then(function(result) {
+      sendResponse({ status: result.status, body: result.body });
+    }).catch(function(err) {
+      sendResponse({ status: 0, error: err.message });
     });
     return true;
   }

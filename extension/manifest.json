@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Arena2API",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "Bridge between arena.ai and OpenAI-compatible API",
   "permissions": [
     "cookies",
